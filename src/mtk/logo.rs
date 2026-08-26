@@ -223,7 +223,9 @@ impl LogoImage {
 
     /// Recomputes `logo_count`, `block_size`, `offsets` and `header.size`
     /// from the current `blobs` (and `cert_inner_len`). Call after mutating
-    /// `blobs` through the public API.
+    /// `blobs` through the public API. When trailing data is present, a
+    /// shrinking repack retains the original payload size so that data keeps
+    /// its absolute offset.
     pub fn rebuild_table(&self) -> Result<LogoTable> {
         let mut offsets: Vec<u32> = Vec::with_capacity(self.blobs.len());
         let mut offset: u32 = (2 + self.blobs.len() as u32)
@@ -236,9 +238,12 @@ impl LogoImage {
                 .ok_or_else(|| IOError::new(ErrorKind::InvalidInput, "blob offset overflow"))?;
         }
         let block_size = offset;
-        let dsize = block_size
+        let mut dsize = block_size
             .checked_add(self.cert_inner_len)
             .ok_or_else(|| IOError::new(ErrorKind::InvalidInput, "dsize overflow"))?;
+        if !self.cert.is_empty() {
+            dsize = dsize.max(self.table.header.size);
+        }
         let mut header = self.table.header;
         header.size = dsize;
         Ok(LogoTable {
@@ -256,7 +261,8 @@ impl LogoImage {
     }
 
     /// Writes the complete logo image. The offset table, `block_size` and
-    /// `dsize` are recomputed from the blobs; the cert is re-appended at
+    /// `dsize` are recomputed from the blobs; trailing data retains its
+    /// original offset when possible, and the outer cert is re-appended at
     /// `align_up(512 + dsize, align_size)` so cert1/cert2 stay detectable.
     pub fn write<W: Write>(&self, mut writer: &mut W) -> Result<()> {
         let table = self.rebuild_table()?;
@@ -266,6 +272,14 @@ impl LogoImage {
             writer.write_all(blob)?;
         }
         let inner_len = self.cert_inner_len as usize;
+        let padding = table
+            .header
+            .size
+            .saturating_sub(table.block_size)
+            .saturating_sub(self.cert_inner_len) as usize;
+        if padding > 0 {
+            writer.write_all(&vec![0u8; padding])?;
+        }
         writer.write_all(self.cert.get(..inner_len).unwrap_or(&[]))?;
         let outer = self.cert.get(inner_len..).unwrap_or(&[]);
         if !outer.is_empty() {

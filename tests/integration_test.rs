@@ -121,6 +121,28 @@ fn can_explode() {
     s.write(&mut writer).unwrap();
 }
 
+#[test]
+fn preserves_trailing_data_offset_when_blobs_shrink() {
+    const MARKER: &[u8] = b"FASTBOOT_UI_SIZE";
+    let mut image = LogoImage::new_blobs(vec![vec![0xAA; 0x400]]).unwrap();
+    image.cert = MARKER.to_vec();
+    image.cert_inner_len = MARKER.len() as u32;
+    image.table.header.size = 0x1000;
+
+    image.blobs[0].truncate(0x100);
+    let expected_offset = 512 + 0x1000 - MARKER.len();
+    let mut output = Vec::new();
+    image.write(&mut output).unwrap();
+
+    assert_eq!(
+        &output[expected_offset..expected_offset + MARKER.len()],
+        MARKER
+    );
+    let repacked = LogoImage::read(&mut Cursor::new(output)).unwrap();
+    assert_eq!(repacked.table.header.size, 0x1000);
+    assert_eq!(repacked.blobs[0].len(), 0x100);
+}
+
 /// We check that compressing/decompressing the same data leads to 'equivalent' payloads.
 #[test]
 fn zlib_is_quite_symetric() {
